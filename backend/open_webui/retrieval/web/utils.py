@@ -64,6 +64,7 @@ from open_webui.retrieval.loaders.external_web import ExternalWebLoader
 from open_webui.retrieval.loaders.microsoft_web_iq import MicrosoftWebIQLoader
 from open_webui.retrieval.loaders.tavily import TavilyLoader
 from open_webui.retrieval.web.firecrawl import scrape_firecrawl_url
+from open_webui.retrieval.web.playwright_content import select_playwright_content
 from open_webui.utils.misc import is_host_allowed
 
 log = logging.getLogger(__name__)
@@ -677,6 +678,22 @@ class SafePlaywrightURLLoader(PlaywrightURLLoader, RateLimitMixin, URLProcessing
         self.trust_env = trust_env
         self.playwright_timeout = playwright_timeout
 
+    @staticmethod
+    def _rendered_body_text(page) -> str:
+        try:
+            return page.locator('body').inner_text()
+        except Exception as e:
+            log.debug('Playwright loader could not read rendered body text: %s', e)
+            return ''
+
+    @staticmethod
+    async def _rendered_body_text_async(page) -> str:
+        try:
+            return await page.locator('body').inner_text()
+        except Exception as e:
+            log.debug('Playwright loader could not read rendered body text: %s', e)
+            return ''
+
     def _request_timeout(self) -> float:
         # per-hop budget, since page.goto's timeout cannot reach into our own fetch and 0 disables
         # it. aiohttp treats it as a total where requests only caps each read, so sync runs looser.
@@ -830,6 +847,17 @@ class SafePlaywrightURLLoader(PlaywrightURLLoader, RateLimitMixin, URLProcessing
                                 raise ValueError(f'page.goto() returned None for url {url}')
 
                             text = self.evaluator.evaluate(page, browser, response)
+                            rendered_text = self._rendered_body_text(page)
+                            selected_text = select_playwright_content(text, rendered_text)
+                            if selected_text != text:
+                                log.warning(
+                                    'Playwright structured extraction for %s returned %d characters; '
+                                    'using %d characters of rendered body text instead',
+                                    url,
+                                    len(text),
+                                    len(rendered_text),
+                                )
+                            text = selected_text
                             metadata = {'source': url}
                             yield Document(page_content=text, metadata=metadata)
                     except Exception as e:
@@ -865,6 +893,17 @@ class SafePlaywrightURLLoader(PlaywrightURLLoader, RateLimitMixin, URLProcessing
                                 raise ValueError(f'page.goto() returned None for url {url}')
 
                             text = await self.evaluator.evaluate_async(page, browser, response)
+                            rendered_text = await self._rendered_body_text_async(page)
+                            selected_text = select_playwright_content(text, rendered_text)
+                            if selected_text != text:
+                                log.warning(
+                                    'Playwright structured extraction for %s returned %d characters; '
+                                    'using %d characters of rendered body text instead',
+                                    url,
+                                    len(text),
+                                    len(rendered_text),
+                                )
+                            text = selected_text
                             metadata = {'source': url}
                             yield Document(page_content=text, metadata=metadata)
                     except Exception as e:
